@@ -1,8 +1,8 @@
-# ImmortalWrt (IMM) rootfs for Docker on RK3566 / 网心云 OEC
+# ImmortalWrt (IMM) rootfs for Docker -- universal aarch64 / arm64
 #
 # Target: armsr/armv8  -- generic ARMv8 (aarch64) SystemReady platform.
-#   容器与 OEC 宿主共用内核 => 不需要板级 dtb / u-boot / WiFi 驱动 / 物理网卡驱动。
-#   armsr/armv8 与 RK3566 同为 aarch64，指令集完全兼容。
+#   容器与宿主(arm64)共用内核 => 不需要板级 dtb / u-boot / WiFi 驱动 / 物理网卡驱动。
+#   armsr/armv8 是任何 arm64 设备都能跑的通用目标，不绑定具体板子。
 #
 # Output: immortalwrt-armsr-armv8-generic-rootfs.tar.gz  (docker import 即可用)
 #
