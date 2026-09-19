@@ -15,11 +15,10 @@ CONFIG_TARGET_armsr_armv8_DEVICE_generic=y
 CONFIG_TARGET_PROFILE="DEVICE_generic"
 
 # rootfs tarball —— 这是本项目的核心产物
+# 保留 armsr 默认的 ext4/squashfs 镜像一起构建：不显式关闭，
+# 避免与 image.mk 的 FILESYSTEMS/TARGET_FILESYSTEMS 过滤逻辑产生边界情况。
+# 最终我们只取 rootfs.tar.gz，磁盘镜像可忽略。
 CONFIG_TARGET_ROOTFS_TARGZ=y
-
-# 不要 ext4/squashfs 磁盘镜像（容器用不上，省时间）
-# CONFIG_TARGET_ROOTFS_EXT4FS is not set
-# CONFIG_TARGET_ROOTFS_SQUASHFS is not set
 CONFIG_TARGET_IMAGES_GZIP=y
 
 # ------------------------------------------------------- base system
