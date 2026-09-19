@@ -147,6 +147,9 @@ docker run -d --name immortalwrt --privileged --network host \
 > 注：ImmortalWrt 的 `/sbin/init` 由 **procd** 包提供（已确认在 rootfs 内），
 > 这是让它作为 PID 1 正常工作的正确入口。
 
+> **包管理器**：本 SNAPSHOT 已切换到 **apk**（`/usr/bin/apk`），不再是 opkg。
+> 容器内装包请用 `apk add --no-cache <pkg>`（如 `apk add --no-cache tcpdump`）。
+
 ---
 
 ## 四、OpenClash 使用
