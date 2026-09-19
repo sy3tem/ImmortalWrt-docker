@@ -111,6 +111,36 @@ docker exec -it immortalwrt sh -c "
 
 然后浏览器打开 `http://<OEC-IP>`，默认无密码（首次登录请立即设置）。
 
+### 4. 若容器启动即退出（preinit 问题）
+
+OpenWrt 的 `/sbin/init` 会走 preinit → `80_mount_root`，它会尝试挂载根分区。
+容器里没有独立的块设备，个别宿主环境下会卡住或退出。排查与对策：
+
+```bash
+# 看容器日志
+docker logs immortalwrt
+
+# 若卡在 preinit / mount_root，给容器加上 proc/sys 与 pid 命名空间
+docker rm -f immortalwrt
+docker run -d --name immortalwrt --restart unless-stopped \
+  --privileged --network host \
+  -v /lib/modules:/lib/modules:ro \
+  -v /dev/net/tun:/dev/net/tun \
+  --cap-add NET_ADMIN --cap-add NET_RAW --cap-add SYS_MODULE \
+  --tmpfs /tmp --tmpfs /run \
+  immortalwrt:oec /sbin/init
+```
+
+仍不行时，退一步只跑关键服务（不启动完整 procd 流程）：
+
+```bash
+docker run -d --name immortalwrt --privileged --network host \
+  immortalwrt:oec /bin/sh -c "/etc/init.d/openclash start; sleep infinity"
+```
+
+> 注：ImmortalWrt 的 `/sbin/init` 由 **procd** 包提供（已确认在 rootfs 内），
+> 这是让它作为 PID 1 正常工作的正确入口。
+
 ---
 
 ## 四、OpenClash 使用
