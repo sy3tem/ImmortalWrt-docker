@@ -17,8 +17,8 @@ on:
           - luci-app-passwall
           - luci-app-homeproxy
           - none
-      include_docker:
-        description: 'Include docker/dockerd inside the rootfs (slow)'
+      strip_nic_drivers:
+        description: 'Strip armsr default physical NIC drivers (useless in containers)'
         required: false
         default: 'true'
         type: choice
@@ -64,8 +64,8 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.ccache
-          key: ccache-armsr-armv8-${{ github.sha }}
-          restore-keys: ccache-armsr-armv8-
+          key: ccache-armsr-armv8-slim-${{ github.sha }}
+          restore-keys: ccache-armsr-armv8-slim-
 
       - name: Clone ImmortalWrt
         run: |
@@ -83,11 +83,55 @@ jobs:
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
+      - name: Strip physical NIC drivers from armsr generic device
+        if: ${{ (github.event.inputs.strip_nic_drivers || 'true') == 'true' }}
+        working-directory: imm
+        run: |
+          F=target/linux/armsr/image/Makefile
+          cp "$F" "$F.orig"
+          python3 - "$F" <<'PY'
+          import sys
+          p = sys.argv[1]
+          lines = open(p, 'r', newline='').read().split('\n')
+
+          # The armsr 'generic' device appends ~28 physical NIC / PHY / SFP / RTC
+          # driver packages. A container shares the host kernel and network stack,
+          # so every one of them is dead weight. Remove the whole statement
+          # (line-based, so multi-line '\' continuations are handled correctly).
+          out, i, removed = [], 0, []
+          while i < len(lines):
+              line = lines[i]
+              if line.lstrip().startswith('DEVICE_PACKAGES +='):
+                  while i < len(lines):
+                      cur = lines[i]
+                      removed += [t for t in cur.replace('\\', ' ').split()
+                                  if t.startswith('kmod-') or t == 'partx-utils']
+                      i += 1
+                      if not cur.rstrip('\r').rstrip().endswith('\\'):
+                          break
+                  out.append('\t# DEVICE_PACKAGES intentionally removed for container builds:')
+                  out.append('\t# physical NIC/PHY/SFP/RTC drivers are useless when the container')
+                  out.append('\t# shares the host kernel and network stack.')
+                  continue
+              out.append(line)
+              i += 1
+
+          open(p, 'w', newline='').write('\n'.join(out))
+          print("stripped %d driver entries:" % len(removed))
+          for t in removed:
+              print("   -", t)
+          PY
+          echo "=== resulting Device/generic ==="
+          sed -n '/^define Device\/generic/,/^endef/p' "$F"
+          if sed -n '/^define Device\/generic/,/^endef/p' "$F" | grep -q 'kmod-'; then
+            echo "FATAL: NIC kmods still present after strip"; exit 1
+          fi
+          echo "OK: no NIC kmods left in Device/generic"
+
       - name: Apply defconfig
         working-directory: imm
         run: |
           PLUGIN="${{ github.event.inputs.proxy_plugin || 'luci-app-openclash' }}"
-          DOCKER="${{ github.event.inputs.include_docker || 'true' }}"
 
           cp ../config/imm-docker-defconfig .config
 
@@ -99,29 +143,30 @@ jobs:
             grep -q "^CONFIG_PACKAGE_${PLUGIN}=y" .config || echo "CONFIG_PACKAGE_${PLUGIN}=y" >> .config
           fi
 
-          # --- optionally drop docker stack (dockerd build is very slow) ---
-          if [ "$DOCKER" = "false" ]; then
-            for p in docker dockerd docker-compose luci-app-dockerman; do
-              sed -i "s/^CONFIG_PACKAGE_${p}=y/# CONFIG_PACKAGE_${p} is not set/" .config
-            done
-          fi
-
           make defconfig
 
           echo "=== VERIFY: target ==="
-          grep -E '^CONFIG_TARGET_armsr|^CONFIG_TARGET_armsr_armv8' .config
+          grep -E '^CONFIG_TARGET_armsr|^CONFIG_TARGET_PROFILE' .config
           echo "=== VERIFY: rootfs tarball ==="
           grep -E '^CONFIG_TARGET_ROOTFS_TARGZ' .config
-          echo "=== VERIFY: key packages actually enabled ==="
+          echo "=== VERIFY: must be ON ==="
           for p in luci luci-theme-argon luci-app-openclash dnsmasq-full firewall4 \
-                   kmod-tun kmod-nft-tproxy kmod-inet-diag ruby ruby-yaml \
-                   luci-app-ttyd docker dockerd; do
+                   nftables iptables-nft ipset kmod-tun kmod-nft-tproxy kmod-inet-diag \
+                   ruby ruby-yaml luci-app-ttyd bash curl; do
+            grep -q "^CONFIG_PACKAGE_${p}=y" .config && echo "  ON   $p" || echo "  OFF  $p  <-- PROBLEM"
+          done
+          echo "=== VERIFY: must be OFF (container-useless) ==="
+          for p in dockerd docker docker-compose luci-app-dockerman parted lsblk \
+                   block-mount kmod-fs-ext4 kmod-usb-storage \
+                   kmod-mt7915e kmod-mt7916-firmware wpad-openssl; do
             if grep -q "^CONFIG_PACKAGE_${p}=y" .config; then
-              echo "  ON   $p"
+              echo "  ON   $p  <-- SHOULD BE OFF"
             else
-              echo "  OFF  $p"
+              echo "  off  $p"
             fi
           done
+          echo "=== VERIFY: NIC kmods stripped? ==="
+          grep -cE '^CONFIG_PACKAGE_kmod-(e1000e|vmxnet3|atlantic|bcmgenet|mvneta|dwmac-rockchip)=y' .config || true
 
       - name: Sanity check target supports targz
         working-directory: imm
