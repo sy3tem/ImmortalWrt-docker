@@ -166,8 +166,7 @@ docker run -d --name immortalwrt --privileged --network host \
    透明代理场景一般无需配置接口，交给宿主转发即可。
 3. **不要在容器内启用 DHCP/DNS 抢宿主**。若只想做透明代理，建议关闭容器内
    `dnsmasq` 的 53 端口监听，或在 LuCI 里把 DHCP 关掉，避免与宿主冲突。
-4. **重启后配置丢失**：容器重建即回到初始状态。需要持久化请挂载卷：
-   ```bash
+4. **重启后配置丢失**：容器重建即回到初始状态。需要持久化请挂载卷：   ```bash
    -v /opt/imm-etc:/etc -v /opt/imm-root:/root
    ```
    （更稳妥的做法是只挂载 `/etc/config` 与 `/etc/openclash`。）
@@ -186,13 +185,46 @@ docker run -d --name immortalwrt --privileged --network host \
 可调参数：
 - `imm_ref`：ImmortalWrt 源码分支/tag（默认 `master`，即最新）
 - `proxy_plugin`：`luci-app-openclash` / `luci-app-passwall` / `luci-app-homeproxy` / `none`
-- `include_docker`：是否在 rootfs 内再装 docker（较慢，纯代理场景可设 `false`）
+- `strip_nic_drivers`：是否剔除 armsr 默认的 28 个物理网卡驱动（默认 `true`）
+
+### 关于精简（容器环境专优化）
+
+这套配置**刻意去掉了整机固件才需要、容器里纯属累赘**的东西：
+
+| 剔除项 | 原因 |
+|---|---|
+| `docker` / `dockerd` / `docker-compose` / `luci-app-dockerman` | 容器里再跑 docker 是 DinD，无意义；`dockerd` 还是 Go 编译，占整个构建 20~30 分钟 |
+| `parted` / `lsblk` / `block-mount` / `kmod-fs-ext4` / `kmod-usb-storage` | 容器内没有独立块设备，分区/格式化/挂载全由宿主完成 |
+| **28 个物理网卡驱动** | armsr 的 `DEVICE_PACKAGES` 默认带入 `kmod-e1000e`/`vmxnet3`/`dwmac-rockchip`/`mvneta`/`kmod-sfp`/`kmod-phy-*` 等；容器共用宿主网络栈，一个都用不到。工作流会 patch 掉 `target/linux/armsr/image/Makefile` |
+| WiFi（`kmod-mt7915e` 等） | 按要求不带 |
+
+保留的都是容器里真正会用到的：LuCI + OpenClash 全套依赖（`nftables`/`iptables-nft`/`ipset`/
+`dnsmasq-full`/`ruby`/`kmod-tun` 等）、`ttyd` 终端、以及 `curl`/`jq`/`nmap`/`tcpdump` 等排障工具。
 
 本地复现（Linux/WSL，需 ≥8GB 内存、≥30GB 磁盘）：
 ```bash
 git clone --depth 1 https://github.com/immortalwrt/immortalwrt.git imm
 cd imm
 ./scripts/feeds update -a && ./scripts/feeds install -a
+
+# 剔除容器用不上的物理网卡驱动（与云编译同一逻辑）
+python3 - target/linux/armsr/image/Makefile <<'PY'
+import sys
+p = sys.argv[1]
+lines = open(p, 'r', newline='').read().split('\n')
+out, i = [], 0
+while i < len(lines):
+    line = lines[i]
+    if line.lstrip().startswith('DEVICE_PACKAGES +='):
+        while i < len(lines):
+            cur = lines[i]; i += 1
+            if not cur.rstrip('\r').rstrip().endswith('\\'): break
+        out.append('\t# DEVICE_PACKAGES removed for container builds')
+        continue
+    out.append(line); i += 1
+open(p, 'w', newline='').write('\n'.join(out))
+PY
+
 cp ../config/imm-docker-defconfig .config
 make defconfig
 make -j$(nproc) download
