@@ -1,21 +1,25 @@
-# ImmortalWrt Docker rootfs for 网心云 OEC (RK3566)
+# ImmortalWrt rootfs for Docker (通用 aarch64 / arm64)
 
 用 GitHub Actions 云编译 ImmortalWrt **armsr/armv8**（通用 aarch64）的
-`rootfs.tar.gz`，`docker import` 后即可在 OEC 上以容器方式跑 ImmortalWrt。
+`rootfs.tar.gz`，`docker import` 后即可在任何 **ARM64 宿主**上以容器方式跑 ImmortalWrt
+（如 RK3566/RK3588、树莓派、MT798x、x86 的 arm 版、CNI/软路由小主机等）。
+
+**它不是某个板子的专属镜像**，而是面向 `arm64` 指令集的通用容器 rootfs。
 
 ---
 
-## 一、为什么选 armsr/armv8 而不是 rockchip
+## 一、为什么选 armsr/armv8
 
 | 项 | 说明 |
 |---|---|
-| **容器共用宿主内核** | Docker 容器不启动自己的内核，用的是 OEC 宿主（Armbian）的内核。rootfs 里的 `kmod-*` 内核模块**对容器无效**，靠宿主内核提供。 |
+| **容器共用宿主内核** | Docker 容器不启动自己的内核，用的是宿主内核。rootfs 里的 `kmod-*` 内核模块**对容器无效**，全部由宿主内核提供。 |
 | **不需要板级 dtb/u-boot** | dtb 与 u-boot 是引导阶段的事，容器里完全用不到。 |
-| **不需要 WiFi 驱动** | 正是你的要求。容器内没有 PCIe 直通，WiFi 由宿主管理。 |
-| **指令集匹配** | OEC 是 RK3566 = ARMv8-A aarch64；armsr/armv8 同为 aarch64，二进制完全兼容。 |
-| **官方产物** | ImmortalWrt 官方 `armsr/armv8` 就发布 `rootfs.tar.gz`，本就是给容器/VM 用的。 |
+| **不需要 WiFi / 物理网卡驱动** | 容器内没有 PCIe/总线直通，网络与 WiFi 都由宿主管理，相关 kmod 一律无用。 |
+| **指令集通用** | 目标平台是 **ARMv8-A aarch64**，与任何 arm64 设备二进制完全兼容。 |
+| **官方产物** | ImmortalWrt 官方 `armsr/armv8` 目标就发布 `rootfs.tar.gz`，本就是给容器/VM 用的。 |
 
-> 结论：**整机固件（rockchip）≠ 容器 rootfs**。容器方案选 armsr/armv8 是正解。
+> 结论：**整机固件（rockchip 等）≠ 容器 rootfs**。容器方案选 `armsr/armv8` 是正解，
+> 它是"任何 arm64 机器都能跑"的通用选择。
 
 ---
 
@@ -34,11 +38,14 @@ immortalwrt-armsr-armv8-generic-rootfs.tar.gz
 
 ---
 
-## 三、在 OEC 上导入并运行
+## 三、在 ARM64 宿主上导入并运行
+
+> 宿主指**运行 Docker 的那台机器**（arm64 架构），例如网心云 OEC、RK3588 盒子、
+> 树莓派 4/5、MT798x 路由器等。下面以 OEC 为例，但同样适用于任何 arm64 宿主。
 
 ### 0. 前置：确认宿主内核能力
 
-容器共用宿主内核，OpenClash 的透明代理需要宿主的这些模块。**先在 OEC 上检查**：
+容器共用宿主内核，OpenClash 的透明代理需要宿主的这些模块。**先在宿主上检查**：
 
 ```bash
 # 必需：TUN（透明代理 / tun 模式）
@@ -61,8 +68,7 @@ echo tun | sudo tee -a /etc/modules   # 开机自动加载
 ### 1. 导入镜像
 
 ```bash
-# 把 tar.gz 传到 OEC，然后：
-docker import immortalwrt-armsr-armv8-generic-rootfs.tar.gz immortalwrt:oec
+docker import immortalwrt-armsr-armv8-generic-rootfs.tar.gz immortalwrt:latest
 docker images | grep immortalwrt
 ```
 
@@ -79,7 +85,7 @@ docker run -d \
   -v /lib/modules:/lib/modules:ro \
   -v /dev/net/tun:/dev/net/tun \
   --cap-add NET_ADMIN --cap-add NET_RAW --cap-add SYS_MODULE \
-  immortalwrt:oec /sbin/init
+  immortalwrt:latest /sbin/init
 ```
 
 参数说明：
@@ -98,8 +104,8 @@ docker run -d \
 docker exec -it immortalwrt /bin/sh
 ```
 
-LuCI 默认监听容器内的 `192.168.1.1:80`（`--network host` 下即宿主该地址）。
-**建议改掉默认 LAN 地址**，避免和 OEC 宿主网段冲突：
+LuCI 默认监听容器内 `192.168.1.1:80`（`--network host` 下即宿主的这个地址）。
+**建议改掉默认 LAN 地址**，避免和宿主已有网段冲突：
 
 ```bash
 docker exec -it immortalwrt sh -c "
@@ -109,7 +115,7 @@ docker exec -it immortalwrt sh -c "
 "
 ```
 
-然后浏览器打开 `http://<OEC-IP>`，默认无密码（首次登录请立即设置）。
+然后浏览器打开 `http://<宿主IP>`，默认无密码（首次登录请立即设置）。
 
 ### 4. 若容器启动即退出（preinit 问题）
 
@@ -128,14 +134,14 @@ docker run -d --name immortalwrt --restart unless-stopped \
   -v /dev/net/tun:/dev/net/tun \
   --cap-add NET_ADMIN --cap-add NET_RAW --cap-add SYS_MODULE \
   --tmpfs /tmp --tmpfs /run \
-  immortalwrt:oec /sbin/init
+  immortalwrt:latest /sbin/init
 ```
 
 仍不行时，退一步只跑关键服务（不启动完整 procd 流程）：
 
 ```bash
 docker run -d --name immortalwrt --privileged --network host \
-  immortalwrt:oec /bin/sh -c "/etc/init.d/openclash start; sleep infinity"
+  immortalwrt:latest /bin/sh -c "/etc/init.d/openclash start; sleep infinity"
 ```
 
 > 注：ImmortalWrt 的 `/sbin/init` 由 **procd** 包提供（已确认在 rootfs 内），
@@ -162,11 +168,12 @@ docker run -d --name immortalwrt --privileged --network host \
 
 1. **容器内 `kmod-*` 无效**。rootfs 里的 kmod 包只是依赖占位，真正的模块来自宿主内核。
    若宿主缺 `nft_tproxy`，OpenClash 请改用「Redir 模式」（走 iptables/nft 重定向，兼容性更好）。
-2. **`/etc/config/network` 的物理接口名**取决于宿主。容器内看不到 OEC 的 `eth0/eth1`，
+2. **`/etc/config/network` 的物理接口名**取决于宿主。容器内看不到宿主的物理网口，
    透明代理场景一般无需配置接口，交给宿主转发即可。
 3. **不要在容器内启用 DHCP/DNS 抢宿主**。若只想做透明代理，建议关闭容器内
    `dnsmasq` 的 53 端口监听，或在 LuCI 里把 DHCP 关掉，避免与宿主冲突。
-4. **重启后配置丢失**：容器重建即回到初始状态。需要持久化请挂载卷：   ```bash
+4. **重启后配置丢失**：容器重建即回到初始状态。需要持久化请挂载卷：
+   ```bash
    -v /opt/imm-etc:/etc -v /opt/imm-root:/root
    ```
    （更稳妥的做法是只挂载 `/etc/config` 与 `/etc/openclash`。）
@@ -196,7 +203,7 @@ docker run -d --name immortalwrt --privileged --network host \
 | `docker` / `dockerd` / `docker-compose` / `luci-app-dockerman` | 容器里再跑 docker 是 DinD，无意义；`dockerd` 还是 Go 编译，占整个构建 20~30 分钟 |
 | `parted` / `lsblk` / `block-mount` / `kmod-fs-ext4` / `kmod-usb-storage` | 容器内没有独立块设备，分区/格式化/挂载全由宿主完成 |
 | **28 个物理网卡驱动** | armsr 的 `DEVICE_PACKAGES` 默认带入 `kmod-e1000e`/`vmxnet3`/`dwmac-rockchip`/`mvneta`/`kmod-sfp`/`kmod-phy-*` 等；容器共用宿主网络栈，一个都用不到。工作流会 patch 掉 `target/linux/armsr/image/Makefile` |
-| WiFi（`kmod-mt7915e` 等） | 按要求不带 |
+| WiFi（`kmod-mt7915e` 等） | 容器内无需 WiFi 驱动 |
 
 保留的都是容器里真正会用到的：LuCI + OpenClash 全套依赖（`nftables`/`iptables-nft`/`ipset`/
 `dnsmasq-full`/`ruby`/`kmod-tun` 等）、`ttyd` 终端、以及 `curl`/`jq`/`nmap`/`tcpdump` 等排障工具。
@@ -234,13 +241,16 @@ ls -lh bin/targets/armsr/armv8/*rootfs.tar.gz
 
 ---
 
-## 七、与之前 RT28 整机固件的区别
+## 七、适用范围
 
-| | RT28 整机固件 | 本项目（OEC docker rootfs） |
+| 宿主类型 | 架构 | 可否直接用本 rootfs |
 |---|---|---|
-| 目标 | `rockchip/armv8` | `armsr/armv8` |
-| 产物 | `squashfs-sysupgrade.img.gz` | `rootfs.tar.gz` |
-| 用途 | 烧写 eMMC/SD 直接启动 | `docker import` 跑容器 |
-| 内核 | 自带（含板级 dtb/驱动） | **用宿主的** |
-| u-boot | 需要 | 不需要 |
-| WiFi | 需要 kmod | 不需要 |
+| 网心云 OEC (RK3566) | aarch64 | ✅ |
+| RK3588 盒子 | aarch64 | ✅ |
+| 树莓派 4/5 | aarch64 | ✅ |
+| MT798x 路由器（OpenWrt 宿主） | aarch64 | ✅ |
+| 其他任何 arm64 Linux 主机 | aarch64 | ✅ |
+| x86_64 主机 | amd64 | ❌（需另编 `x86/64` rootfs） |
+
+> 本 rootfs 是 **arm64 通用**的：只要宿主是 `aarch64` 且内核对 OpenWrt 容器够友好就能跑，
+> 不绑定任何具体板子。x86 主机请改用 IMM 的 `x86/64` 目标重新编一个即可。
